@@ -1,0 +1,615 @@
+import Database from "better-sqlite3";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+
+export type AvailabilityInput = {
+  date: string;
+  time_window: string;
+  number_of_players: number;
+  holes?: number;
+};
+
+export type BookingInput = {
+  name: string;
+  contact: string;
+  member_or_guest: "member" | "guest";
+  date: string;
+  selected_slot: string;
+  number_of_players: number;
+  holes?: number;
+  notes?: string;
+};
+
+export type WaitlistInput = {
+  name: string;
+  contact: string;
+  date: string;
+  time_window: string;
+  number_of_players: number;
+  notes?: string;
+};
+
+const dataDir = path.join(process.cwd(), "data");
+fs.mkdirSync(dataDir, { recursive: true });
+
+const isBuildMode = process.env.FAIRWAYOPS_BUILD_MODE === "1";
+const dbPath = isBuildMode
+  ? ":memory:"
+  : path.join(dataDir, "fairwayops.sqlite");
+const db = new Database(dbPath);
+db.pragma("journal_mode = WAL");
+db.pragma("busy_timeout = 5000");
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function melbourneDate(offsetDays = 0) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Melbourne",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const base = new Date();
+  base.setUTCDate(base.getUTCDate() + offsetDays);
+  return formatter.format(base);
+}
+
+function createSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tee_times (
+      id TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      end_time TEXT NOT NULL,
+      capacity INTEGER NOT NULL,
+      holes INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'available'
+    );
+
+    CREATE TABLE IF NOT EXISTS booking_requests (
+      id TEXT PRIMARY KEY,
+      caller_name TEXT NOT NULL,
+      contact TEXT NOT NULL,
+      member_or_guest TEXT NOT NULL,
+      tee_time_id TEXT,
+      date TEXT NOT NULL,
+      selected_slot TEXT NOT NULL,
+      number_of_players INTEGER NOT NULL,
+      holes INTEGER NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS waitlist_entries (
+      id TEXT PRIMARY KEY,
+      caller_name TEXT NOT NULL,
+      contact TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time_window TEXT NOT NULL,
+      number_of_players INTEGER NOT NULL,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS calls (
+      id TEXT PRIMARY KEY,
+      retell_call_id TEXT,
+      caller_name TEXT,
+      intent TEXT,
+      summary TEXT,
+      transcript TEXT,
+      sentiment TEXT,
+      status TEXT NOT NULL DEFAULT 'completed',
+      raw_payload TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_calls (
+      id TEXT PRIMARY KEY,
+      tool_name TEXT NOT NULL,
+      request_payload TEXT NOT NULL,
+      response_payload TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+}
+
+function seedData() {
+  const runSeed = db.transaction(() => {
+    const count = db
+      .prepare("SELECT COUNT(*) as count FROM tee_times")
+      .get() as { count: number };
+    if (count.count > 0) return;
+
+    const insertSlot = db.prepare(`
+      INSERT INTO tee_times (id, date, start_time, end_time, capacity, holes, status)
+      VALUES (@id, @date, @start_time, @end_time, @capacity, @holes, @status)
+    `);
+
+    const dailySlots = [
+      ["07:40", "12:10", 4, 18, "available"],
+      ["08:10", "10:10", 4, 9, "available"],
+      ["08:50", "13:20", 2, 18, "available"],
+      ["09:20", "11:20", 4, 9, "available"],
+      ["10:10", "14:40", 2, 18, "available"],
+      ["11:30", "13:30", 4, 9, "available"],
+      ["13:10", "17:40", 4, 18, "available"],
+      ["15:20", "17:20", 4, 9, "available"],
+    ];
+
+    const dates = Array.from({ length: 7 }, (_, index) =>
+      melbourneDate(index + 1),
+    );
+    const slots = dates.flatMap((date) =>
+      dailySlots.map(
+        ([start_time, end_time, capacity, holes, status]) => [
+          date,
+          start_time,
+          end_time,
+          capacity,
+          holes,
+          status,
+        ],
+      ),
+    );
+
+    for (const [
+      date,
+      start_time,
+      end_time,
+      capacity,
+      holes,
+      status,
+    ] of slots) {
+      insertSlot.run({
+        id: randomUUID(),
+        date,
+        start_time,
+        end_time,
+        capacity,
+        holes,
+        status,
+      });
+    }
+
+    const saturday810 = db
+      .prepare("SELECT id FROM tee_times WHERE date = ? AND start_time = ?")
+      .get(dates[0], "08:10") as { id: string };
+    const saturday740 = db
+      .prepare("SELECT id FROM tee_times WHERE date = ? AND start_time = ?")
+      .get(dates[0], "07:40") as { id: string };
+
+    const insertBooking = db.prepare(`
+      INSERT INTO booking_requests (
+        id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
+        number_of_players, holes, notes, status, created_at
+      )
+      VALUES (
+        @id, @caller_name, @contact, @member_or_guest, @tee_time_id, @date, @selected_slot,
+        @number_of_players, @holes, @notes, @status, @created_at
+      )
+    `);
+
+    insertBooking.run({
+      id: randomUUID(),
+      caller_name: "Oliver Chen",
+      contact: "oliver@example.com",
+      member_or_guest: "member",
+      tee_time_id: saturday810.id,
+      date: dates[0],
+      selected_slot: "08:10",
+      number_of_players: 4,
+      holes: 9,
+      notes: "Seed booking: blocks 8:10 tomorrow for live availability demo.",
+      status: "pending",
+      created_at: nowIso(),
+    });
+
+    insertBooking.run({
+      id: randomUUID(),
+      caller_name: "Priya Shah",
+      contact: "+61411111111",
+      member_or_guest: "member",
+      tee_time_id: saturday740.id,
+      date: dates[0],
+      selected_slot: "07:40",
+      number_of_players: 4,
+      holes: 18,
+      notes: "Seed booking: early group tomorrow.",
+      status: "confirmed",
+      created_at: nowIso(),
+    });
+
+    db.prepare(
+      `
+      INSERT INTO waitlist_entries (id, caller_name, contact, date, time_window, number_of_players, notes, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    ).run(
+      randomUUID(),
+      "Grace Williams",
+      "grace@example.com",
+      dates[0],
+      "07:00-09:00",
+      2,
+      "Seed waitlist: wants an early tee time tomorrow.",
+      "open",
+      nowIso(),
+    );
+
+    db.prepare(
+      `
+      INSERT INTO calls (id, retell_call_id, caller_name, intent, summary, transcript, sentiment, status, raw_payload, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    ).run(
+      randomUUID(),
+      "seed_call_001",
+      "Oliver Chen",
+      "tee_time_booking",
+      "Seed call: Oliver requested tomorrow at 8:10 AM for four players.",
+      "Caller asked for tomorrow morning. Agent created a booking request.",
+      "neutral",
+      "completed",
+      "{}",
+      nowIso(),
+    );
+  });
+
+  runSeed();
+}
+
+createSchema();
+seedData();
+syncBookedTeeTimeStatuses();
+
+function syncBookedTeeTimeStatuses() {
+  db.prepare(
+    `
+    UPDATE tee_times
+    SET status = 'booked'
+    WHERE id IN (
+      SELECT tee_time_id
+      FROM booking_requests
+      WHERE tee_time_id IS NOT NULL
+        AND status IN ('pending', 'confirmed')
+    )
+  `,
+  ).run();
+}
+
+export function getDbPath() {
+  return dbPath;
+}
+
+export function parseWindow(timeWindow: string) {
+  console.log("[db:parseWindow] raw time_window", JSON.stringify(timeWindow));
+  const normalized = String(timeWindow)
+    .trim()
+    .replace(/[–—−]/g, "-")
+    .replace(/\s+/g, "");
+  console.log("[db:parseWindow] normalized time_window", JSON.stringify(normalized));
+
+  const [rawStart, rawEnd] = normalized.split("-").map((part) => part.trim());
+
+  const normalizeTime = (value: string | undefined) => {
+    if (!value) return "";
+    const match = value.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return value;
+    return `${match[1].padStart(2, "0")}:${match[2]}`;
+  };
+
+  const start = normalizeTime(rawStart);
+  const end = normalizeTime(rawEnd);
+  console.log(
+    "[db:parseWindow] parsed",
+    JSON.stringify({ rawStart, rawEnd, start, end }),
+  );
+
+  if (
+    !start ||
+    !end ||
+    !/^\d{2}:\d{2}$/.test(start) ||
+    !/^\d{2}:\d{2}$/.test(end)
+  ) {
+    throw new Error(
+      `time_window must be in HH:MM-HH:MM format, e.g. 07:30-08:30. Received: ${JSON.stringify(timeWindow)}`,
+    );
+  }
+  return { start, end };
+}
+
+export function checkAvailability(input: AvailabilityInput) {
+  console.log("[db:checkAvailability] input", JSON.stringify(input, null, 2));
+  const { start, end } = parseWindow(input.time_window);
+  const players = Number(input.number_of_players);
+  const holes = Number(input.holes ?? 18);
+  console.log(
+    "[db:checkAvailability] normalized query",
+    JSON.stringify(
+      { date: input.date, start, end, players, holes },
+      null,
+      2,
+    ),
+  );
+
+  const slots = db
+    .prepare(
+      `
+    SELECT
+      tt.*,
+      br.id AS booking_id,
+      br.caller_name AS booked_by,
+      br.status AS booking_status
+    FROM tee_times tt
+    LEFT JOIN booking_requests br
+      ON br.tee_time_id = tt.id
+      AND br.status IN ('pending', 'confirmed')
+    WHERE tt.date = ?
+      AND tt.start_time >= ?
+      AND tt.start_time <= ?
+      AND tt.holes = ?
+      AND tt.status = 'available'
+    ORDER BY tt.start_time ASC
+  `,
+    )
+    .all(input.date, start, end, holes);
+  console.log(
+    "[db:checkAvailability] candidate slots from DB",
+    JSON.stringify(slots, null, 2),
+  );
+
+  const availableSlots = slots
+    .filter((slot: any) => !slot.booking_id)
+    .filter((slot: any) => Number(slot.capacity) >= players)
+    .map((slot: any) => ({
+      tee_time_id: slot.id,
+      date: slot.date,
+      selected_slot: slot.start_time,
+      start_time: slot.start_time,
+      end_time: slot.end_time,
+      players_supported: slot.capacity,
+      holes: slot.holes,
+    }));
+
+  const blocked = slots
+    .filter((slot: any) => slot.booking_id || Number(slot.capacity) < players)
+    .map((slot: any) => ({
+      time: slot.start_time,
+      reason: slot.booking_id
+        ? `Already has an active booking request for ${slot.booked_by}.`
+        : `Only supports ${slot.capacity} players.`,
+    }));
+
+  const result = {
+    available: availableSlots.length > 0,
+    requested: {
+      date: input.date,
+      time_window: input.time_window,
+      number_of_players: players,
+      holes,
+    },
+    slots: availableSlots,
+    blocked,
+    message:
+      availableSlots.length > 0
+        ? `I found ${availableSlots.length} available tee time${availableSlots.length === 1 ? "" : "s"}.`
+        : "No tee times are available in that requested window.",
+  };
+  console.log("[db:checkAvailability] final result", JSON.stringify(result, null, 2));
+  return result;
+}
+
+export function createBooking(input: BookingInput) {
+  console.log("[db:createBooking] input", JSON.stringify(input, null, 2));
+  const slot = db
+    .prepare(
+      `
+    SELECT tt.*
+    FROM tee_times tt
+    LEFT JOIN booking_requests br
+      ON br.tee_time_id = tt.id
+      AND br.status IN ('pending', 'confirmed')
+    WHERE tt.date = ?
+      AND tt.start_time = ?
+      AND tt.holes = ?
+      AND tt.status = 'available'
+      AND br.id IS NULL
+    LIMIT 1
+  `,
+    )
+    .get(input.date, input.selected_slot, input.holes ?? 18) as any;
+  console.log("[db:createBooking] matched slot", JSON.stringify(slot ?? null, null, 2));
+
+  if (!slot) {
+    const result = {
+      success: false,
+      error: "slot_unavailable",
+      message:
+        "That tee time is no longer available. Offer the waitlist or suggest another time.",
+    };
+    console.log("[db:createBooking] failure result", JSON.stringify(result, null, 2));
+    return result;
+  }
+
+  if (slot.capacity < input.number_of_players) {
+    const result = {
+      success: false,
+      error: "capacity_too_low",
+      message: `That slot only supports ${slot.capacity} players.`,
+    };
+    console.log("[db:createBooking] failure result", JSON.stringify(result, null, 2));
+    return result;
+  }
+
+  const id = randomUUID();
+  const createBookingRequest = db.transaction(() => {
+    db.prepare(
+      `
+      INSERT INTO booking_requests (
+        id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
+        number_of_players, holes, notes, status, created_at
+      )
+      VALUES (
+        @id, @caller_name, @contact, @member_or_guest, @tee_time_id, @date, @selected_slot,
+        @number_of_players, @holes, @notes, 'pending', @created_at
+      )
+    `,
+    ).run({
+      id,
+      caller_name: input.name,
+      contact: input.contact,
+      member_or_guest: input.member_or_guest,
+      tee_time_id: slot.id,
+      date: input.date,
+      selected_slot: input.selected_slot,
+      number_of_players: input.number_of_players,
+      holes: input.holes ?? slot.holes ?? 18,
+      notes: input.notes ?? "",
+      created_at: nowIso(),
+    });
+
+    db.prepare("UPDATE tee_times SET status = 'booked' WHERE id = ?").run(
+      slot.id,
+    );
+  });
+
+  createBookingRequest();
+
+  const result = {
+    success: true,
+    booking_request_id: id,
+    status: "pending",
+    tee_time_status: "booked",
+    message: "Booking request created. The team will confirm it shortly.",
+  };
+  console.log("[db:createBooking] success result", JSON.stringify(result, null, 2));
+  return result;
+}
+
+export function addWaitlist(input: WaitlistInput) {
+  console.log("[db:addWaitlist] input", JSON.stringify(input, null, 2));
+  parseWindow(input.time_window);
+  const id = randomUUID();
+  db.prepare(
+    `
+    INSERT INTO waitlist_entries (id, caller_name, contact, date, time_window, number_of_players, notes, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
+  `,
+  ).run(
+    id,
+    input.name,
+    input.contact,
+    input.date,
+    input.time_window,
+    input.number_of_players,
+    input.notes ?? "",
+    nowIso(),
+  );
+
+  const result = {
+    success: true,
+    waitlist_id: id,
+    status: "open",
+    message:
+      "Waitlist entry created. The team will contact the caller if a suitable slot opens.",
+  };
+  console.log("[db:addWaitlist] result", JSON.stringify(result, null, 2));
+  return result;
+}
+
+export function savePostCall(payload: any) {
+  console.log("[db:savePostCall] payload", JSON.stringify(payload, null, 2));
+  const id = randomUUID();
+  const retellCallId =
+    payload.call_id ?? payload.call?.call_id ?? payload.retell_call_id ?? null;
+  const analysis = payload.call_analysis ?? payload.analysis ?? {};
+  const callerName =
+    analysis.caller_name ??
+    payload.caller_name ??
+    payload.customer_name ??
+    null;
+
+  db.prepare(
+    `
+    INSERT INTO calls (
+      id, retell_call_id, caller_name, intent, summary, transcript, sentiment,
+      status, raw_payload, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    id,
+    retellCallId,
+    callerName,
+    analysis.intent ?? payload.intent ?? "post_call",
+    analysis.call_summary ??
+      analysis.summary ??
+      payload.summary ??
+      "Post-call webhook received.",
+    payload.transcript ??
+      payload.transcript_object
+        ?.map?.((item: any) => item.content)
+        .join("\n") ??
+      "",
+    analysis.sentiment ?? payload.sentiment ?? null,
+    payload.call_status ?? payload.status ?? "completed",
+    JSON.stringify(payload, null, 2),
+    nowIso(),
+  );
+
+  const result = {
+    success: true,
+    call_log_id: id,
+    message: "Post-call analysis saved.",
+  };
+  console.log("[db:savePostCall] result", JSON.stringify(result, null, 2));
+  return result;
+}
+
+export function logToolCall(
+  toolName: string,
+  requestPayload: unknown,
+  responsePayload: unknown,
+) {
+  console.log(
+    "[db:logToolCall]",
+    JSON.stringify({ toolName, requestPayload, responsePayload }, null, 2),
+  );
+  db.prepare(
+    `
+    INSERT INTO tool_calls (id, tool_name, request_payload, response_payload, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `,
+  ).run(
+    randomUUID(),
+    toolName,
+    JSON.stringify(requestPayload, null, 2),
+    JSON.stringify(responsePayload, null, 2),
+    nowIso(),
+  );
+}
+
+export function getDashboardData() {
+  return {
+    db_path: dbPath,
+    tee_times: db
+      .prepare("SELECT * FROM tee_times ORDER BY date, start_time")
+      .all(),
+    booking_requests: db
+      .prepare("SELECT * FROM booking_requests ORDER BY created_at DESC")
+      .all(),
+    waitlist_entries: db
+      .prepare("SELECT * FROM waitlist_entries ORDER BY created_at DESC")
+      .all(),
+    calls: db.prepare("SELECT * FROM calls ORDER BY created_at DESC").all(),
+    tool_calls: db
+      .prepare("SELECT * FROM tool_calls ORDER BY created_at DESC LIMIT 25")
+      .all(),
+  };
+}

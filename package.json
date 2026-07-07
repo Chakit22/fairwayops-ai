@@ -1,0 +1,30 @@
+{
+  "name": "fairwayops-ai",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "25.2.1"
+  },
+  "scripts": {
+    "dev": "/opt/homebrew/bin/node ./node_modules/next/dist/bin/next dev",
+    "build": "FAIRWAYOPS_BUILD_MODE=1 /opt/homebrew/bin/node ./node_modules/next/dist/bin/next build",
+    "start": "/opt/homebrew/bin/node ./node_modules/next/dist/bin/next start",
+    "lint": "next lint",
+    "typecheck": "/opt/homebrew/bin/node ./node_modules/typescript/bin/tsc --noEmit",
+    "check:node": "/opt/homebrew/bin/node -e \"console.log(process.version, process.versions.modules)\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.6",
+    "next": "^16.0.8",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "retell-client-js-sdk": "^2.0.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
+  }
+}
