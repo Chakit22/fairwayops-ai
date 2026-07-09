@@ -21,16 +21,14 @@ export function logEvent(event: string, payload: unknown) {
   };
 
   if (!canWriteLocalLogs) {
-    console.log("[fairwayops:event]", JSON.stringify(entry));
     return;
   }
 
   try {
     fs.mkdirSync(logDir, { recursive: true });
     fs.appendFileSync(logPath, `${JSON.stringify(entry)}\n`, "utf8");
-  } catch (error) {
-    console.warn("[fairwayops:event-log-failed]", error);
-    console.log("[fairwayops:event]", JSON.stringify(entry));
+  } catch {
+    // Logging should never break the demo flow.
   }
 }
 

@@ -15,23 +15,16 @@ export async function POST(request: Request) {
   let body: any = {};
   try {
     body = await request.json();
-    console.log(`[tool:${toolName}] incoming payload`, JSON.stringify(body, null, 2));
     logEvent(`${toolName}:incoming`, body);
     const normalizedBody = unwrapRetellPayload(body);
-    console.log(
-      `[tool:${toolName}] normalized payload`,
-      JSON.stringify(normalizedBody, null, 2),
-    );
     logEvent(`${toolName}:normalized`, normalizedBody);
     const result = await createBooking(normalizedBody);
-    console.log(`[tool:${toolName}] result`, JSON.stringify(result, null, 2));
     logEvent(`${toolName}:result`, result);
     const response = toRetellToolResponse(result, "Booking request created.");
     logEvent(`${toolName}:response`, response);
     await logToolCall("createBookingRequest", body, response);
     return NextResponse.json(response);
   } catch (error) {
-    console.error(`[tool:${toolName}] failed`, error);
     logEvent(`${toolName}:error`, {
       body,
       error: error instanceof Error ? error.message : String(error),

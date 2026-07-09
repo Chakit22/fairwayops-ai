@@ -45,10 +45,10 @@ export default function CallPage() {
         setTranscript(update.transcript.slice(-6));
       }
     });
-    client.on("error", (error: unknown) => {
+    client.on("error", () => {
       setCallState("error");
       setAgentTalking(false);
-      setErrorMessage(error instanceof Error ? error.message : String(error));
+      setErrorMessage("Unable to continue the voice call. Please try again.");
       client.stopCall();
     });
 
@@ -69,9 +69,9 @@ export default function CallPage() {
         throw new Error(data.error ?? `Request failed (${res.status})`);
       }
       await clientRef.current?.startCall({ accessToken: data.access_token });
-    } catch (error) {
+    } catch {
       setCallState("error");
-      setErrorMessage(error instanceof Error ? error.message : String(error));
+      setErrorMessage("Unable to start the voice call. Please try again.");
     }
   }
 

@@ -8,13 +8,13 @@ export async function POST() {
 
   if (!apiKey) {
     return Response.json(
-      { error: "RETELL_API_KEY is not set. Add it to .env.local and restart the dev server." },
+      { error: "Voice call configuration is missing." },
       { status: 500 },
     );
   }
   if (!agentId) {
     return Response.json(
-      { error: "RETELL_AGENT_ID is not set. Add it to .env.local and restart the dev server." },
+      { error: "Voice call configuration is missing." },
       { status: 500 },
     );
   }
@@ -32,7 +32,7 @@ export async function POST() {
     const detail = await res.text();
     logEvent("create_web_call_error", { status: res.status, detail });
     return Response.json(
-      { error: `Retell create-web-call failed (${res.status}): ${detail}` },
+      { error: "Unable to start the voice call. Please try again." },
       { status: 502 },
     );
   }

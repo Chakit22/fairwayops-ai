@@ -244,12 +244,10 @@ export function getDbPath() {
 }
 
 export function parseWindow(timeWindow: string) {
-  console.log("[db:parseWindow] raw time_window", JSON.stringify(timeWindow));
   const normalized = String(timeWindow)
     .trim()
     .replace(/[–—−]/g, "-")
     .replace(/\s+/g, "");
-  console.log("[db:parseWindow] normalized time_window", JSON.stringify(normalized));
 
   const [rawStart, rawEnd] = normalized.split("-").map((part) => part.trim());
 
@@ -262,10 +260,6 @@ export function parseWindow(timeWindow: string) {
 
   const start = normalizeTime(rawStart);
   const end = normalizeTime(rawEnd);
-  console.log(
-    "[db:parseWindow] parsed",
-    JSON.stringify({ rawStart, rawEnd, start, end }),
-  );
 
   if (
     !start ||
@@ -283,14 +277,9 @@ export function parseWindow(timeWindow: string) {
 export async function checkAvailability(input: AvailabilityInput) {
   await ensureInitialized();
   const sql = getSql();
-  console.log("[db:checkAvailability] input", JSON.stringify(input, null, 2));
   const { start, end } = parseWindow(input.time_window);
   const players = Number(input.number_of_players);
   const holes = Number(input.holes ?? 18);
-  console.log(
-    "[db:checkAvailability] normalized query",
-    JSON.stringify({ date: input.date, start, end, players, holes }, null, 2),
-  );
 
   const slots = (await sql`
     SELECT
@@ -309,7 +298,6 @@ export async function checkAvailability(input: AvailabilityInput) {
       AND tt.status = 'available'
     ORDER BY tt.start_time ASC
   `) as DbRow[];
-  console.log("[db:checkAvailability] candidate slots from DB", JSON.stringify(slots, null, 2));
 
   const availableSlots = slots
     .filter((slot: any) => !slot.booking_id)
@@ -348,14 +336,12 @@ export async function checkAvailability(input: AvailabilityInput) {
         ? `I found ${availableSlots.length} available tee time${availableSlots.length === 1 ? "" : "s"}.`
         : "No tee times are available in that requested window.",
   };
-  console.log("[db:checkAvailability] final result", JSON.stringify(result, null, 2));
   return result;
 }
 
 export async function createBooking(input: BookingInput) {
   await ensureInitialized();
   const sql = getSql();
-  console.log("[db:createBooking] input", JSON.stringify(input, null, 2));
   const holes = Number(input.holes ?? 18);
   const [slot] = (await sql`
     SELECT tt.*
@@ -370,7 +356,6 @@ export async function createBooking(input: BookingInput) {
       AND br.id IS NULL
     LIMIT 1
   `) as DbRow[];
-  console.log("[db:createBooking] matched slot", JSON.stringify(slot ?? null, null, 2));
 
   if (!slot) {
     const result = {
@@ -378,7 +363,6 @@ export async function createBooking(input: BookingInput) {
       error: "slot_unavailable",
       message: "That tee time is no longer available. Offer the waitlist or suggest another time.",
     };
-    console.log("[db:createBooking] failure result", JSON.stringify(result, null, 2));
     return result;
   }
 
@@ -388,7 +372,6 @@ export async function createBooking(input: BookingInput) {
       error: "capacity_too_low",
       message: `That slot only supports ${slot.capacity} players.`,
     };
-    console.log("[db:createBooking] failure result", JSON.stringify(result, null, 2));
     return result;
   }
 
@@ -406,7 +389,6 @@ export async function createBooking(input: BookingInput) {
       error: "slot_unavailable",
       message: "That tee time was just taken. Offer the waitlist or suggest another time.",
     };
-    console.log("[db:createBooking] race failure result", JSON.stringify(result, null, 2));
     return result;
   }
 
@@ -430,14 +412,12 @@ export async function createBooking(input: BookingInput) {
     tee_time_status: "booked",
     message: "Booking request created. The team will confirm it shortly.",
   };
-  console.log("[db:createBooking] success result", JSON.stringify(result, null, 2));
   return result;
 }
 
 export async function addWaitlist(input: WaitlistInput) {
   await ensureInitialized();
   const sql = getSql();
-  console.log("[db:addWaitlist] input", JSON.stringify(input, null, 2));
   parseWindow(input.time_window);
   const id = randomUUID();
   await sql`
@@ -456,14 +436,12 @@ export async function addWaitlist(input: WaitlistInput) {
     status: "open",
     message: "Waitlist entry created. The team will contact the caller if a suitable slot opens.",
   };
-  console.log("[db:addWaitlist] result", JSON.stringify(result, null, 2));
   return result;
 }
 
 export async function savePostCall(payload: any) {
   await ensureInitialized();
   const sql = getSql();
-  console.log("[db:savePostCall] payload", JSON.stringify(payload, null, 2));
   const id = randomUUID();
   const retellCallId =
     payload.call_id ?? payload.call?.call_id ?? payload.retell_call_id ?? null;
@@ -495,7 +473,6 @@ export async function savePostCall(payload: any) {
     call_log_id: id,
     message: "Post-call analysis saved.",
   };
-  console.log("[db:savePostCall] result", JSON.stringify(result, null, 2));
   return result;
 }
 
@@ -507,10 +484,6 @@ export async function logToolCall(
   try {
     await ensureInitialized();
     const sql = getSql();
-    console.log(
-      "[db:logToolCall]",
-      JSON.stringify({ toolName, requestPayload, responsePayload }, null, 2),
-    );
     await sql`
       INSERT INTO tool_calls (id, tool_name, request_payload, response_payload, created_at)
       VALUES (
@@ -521,8 +494,8 @@ export async function logToolCall(
         ${nowIso()}
       )
     `;
-  } catch (error) {
-    console.error("[db:logToolCall] failed", error);
+  } catch {
+    // Tool-call persistence is best effort.
   }
 }
 
