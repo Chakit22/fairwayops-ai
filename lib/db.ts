@@ -1,7 +1,5 @@
-import Database from "better-sqlite3";
-import path from "node:path";
+import { neon } from "@neondatabase/serverless";
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 
 export type AvailabilityInput = {
   date: string;
@@ -30,16 +28,21 @@ export type WaitlistInput = {
   notes?: string;
 };
 
-const dataDir = path.join(process.cwd(), "data");
-fs.mkdirSync(dataDir, { recursive: true });
+type SqlClient = ReturnType<typeof neon>;
+type DbRow = Record<string, any>;
 
-const isBuildMode = process.env.FAIRWAYOPS_BUILD_MODE === "1";
-const dbPath = isBuildMode
-  ? ":memory:"
-  : path.join(dataDir, "fairwayops.sqlite");
-const db = new Database(dbPath);
-db.pragma("journal_mode = WAL");
-db.pragma("busy_timeout = 5000");
+let sqlClient: SqlClient | null = null;
+let initPromise: Promise<void> | null = null;
+
+function getSql() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is required. Create a Neon database and set DATABASE_URL in Vercel.");
+  }
+  if (!sqlClient) {
+    sqlClient = neon(process.env.DATABASE_URL);
+  }
+  return sqlClient;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -57,8 +60,9 @@ function melbourneDate(offsetDays = 0) {
   return formatter.format(base);
 }
 
-function createSchema() {
-  db.exec(`
+async function createSchema() {
+  const sql = getSql();
+  await sql`
     CREATE TABLE IF NOT EXISTS tee_times (
       id TEXT PRIMARY KEY,
       date TEXT NOT NULL,
@@ -67,8 +71,9 @@ function createSchema() {
       capacity INTEGER NOT NULL,
       holes INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'available'
-    );
-
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS booking_requests (
       id TEXT PRIMARY KEY,
       caller_name TEXT NOT NULL,
@@ -82,8 +87,9 @@ function createSchema() {
       notes TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL
-    );
-
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS waitlist_entries (
       id TEXT PRIMARY KEY,
       caller_name TEXT NOT NULL,
@@ -94,8 +100,9 @@ function createSchema() {
       notes TEXT,
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL
-    );
-
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS calls (
       id TEXT PRIMARY KEY,
       retell_call_id TEXT,
@@ -107,170 +114,22 @@ function createSchema() {
       status TEXT NOT NULL DEFAULT 'completed',
       raw_payload TEXT,
       created_at TEXT NOT NULL
-    );
-
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS tool_calls (
       id TEXT PRIMARY KEY,
       tool_name TEXT NOT NULL,
       request_payload TEXT NOT NULL,
       response_payload TEXT NOT NULL,
       created_at TEXT NOT NULL
-    );
-  `);
+    )
+  `;
 }
 
-function seedData() {
-  const runSeed = db.transaction(() => {
-    const count = db
-      .prepare("SELECT COUNT(*) as count FROM tee_times")
-      .get() as { count: number };
-    if (count.count > 0) return;
-
-    const insertSlot = db.prepare(`
-      INSERT INTO tee_times (id, date, start_time, end_time, capacity, holes, status)
-      VALUES (@id, @date, @start_time, @end_time, @capacity, @holes, @status)
-    `);
-
-    const dailySlots = [
-      ["07:40", "12:10", 4, 18, "available"],
-      ["08:10", "10:10", 4, 9, "available"],
-      ["08:50", "13:20", 2, 18, "available"],
-      ["09:20", "11:20", 4, 9, "available"],
-      ["10:10", "14:40", 2, 18, "available"],
-      ["11:30", "13:30", 4, 9, "available"],
-      ["13:10", "17:40", 4, 18, "available"],
-      ["15:20", "17:20", 4, 9, "available"],
-    ];
-
-    const dates = Array.from({ length: 7 }, (_, index) =>
-      melbourneDate(index + 1),
-    );
-    const slots = dates.flatMap((date) =>
-      dailySlots.map(
-        ([start_time, end_time, capacity, holes, status]) => [
-          date,
-          start_time,
-          end_time,
-          capacity,
-          holes,
-          status,
-        ],
-      ),
-    );
-
-    for (const [
-      date,
-      start_time,
-      end_time,
-      capacity,
-      holes,
-      status,
-    ] of slots) {
-      insertSlot.run({
-        id: randomUUID(),
-        date,
-        start_time,
-        end_time,
-        capacity,
-        holes,
-        status,
-      });
-    }
-
-    const saturday810 = db
-      .prepare("SELECT id FROM tee_times WHERE date = ? AND start_time = ?")
-      .get(dates[0], "08:10") as { id: string };
-    const saturday740 = db
-      .prepare("SELECT id FROM tee_times WHERE date = ? AND start_time = ?")
-      .get(dates[0], "07:40") as { id: string };
-
-    const insertBooking = db.prepare(`
-      INSERT INTO booking_requests (
-        id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
-        number_of_players, holes, notes, status, created_at
-      )
-      VALUES (
-        @id, @caller_name, @contact, @member_or_guest, @tee_time_id, @date, @selected_slot,
-        @number_of_players, @holes, @notes, @status, @created_at
-      )
-    `);
-
-    insertBooking.run({
-      id: randomUUID(),
-      caller_name: "Oliver Chen",
-      contact: "oliver@example.com",
-      member_or_guest: "member",
-      tee_time_id: saturday810.id,
-      date: dates[0],
-      selected_slot: "08:10",
-      number_of_players: 4,
-      holes: 9,
-      notes: "Seed booking: blocks 8:10 tomorrow for live availability demo.",
-      status: "pending",
-      created_at: nowIso(),
-    });
-
-    insertBooking.run({
-      id: randomUUID(),
-      caller_name: "Priya Shah",
-      contact: "+61411111111",
-      member_or_guest: "member",
-      tee_time_id: saturday740.id,
-      date: dates[0],
-      selected_slot: "07:40",
-      number_of_players: 4,
-      holes: 18,
-      notes: "Seed booking: early group tomorrow.",
-      status: "confirmed",
-      created_at: nowIso(),
-    });
-
-    db.prepare(
-      `
-      INSERT INTO waitlist_entries (id, caller_name, contact, date, time_window, number_of_players, notes, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    ).run(
-      randomUUID(),
-      "Grace Williams",
-      "grace@example.com",
-      dates[0],
-      "07:00-09:00",
-      2,
-      "Seed waitlist: wants an early tee time tomorrow.",
-      "open",
-      nowIso(),
-    );
-
-    db.prepare(
-      `
-      INSERT INTO calls (id, retell_call_id, caller_name, intent, summary, transcript, sentiment, status, raw_payload, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    ).run(
-      randomUUID(),
-      "seed_call_001",
-      "Oliver Chen",
-      "tee_time_booking",
-      "Seed call: Oliver requested tomorrow at 8:10 AM for four players.",
-      "Caller asked for tomorrow morning. Agent created a booking request.",
-      "neutral",
-      "completed",
-      "{}",
-      nowIso(),
-    );
-  });
-
-  runSeed();
-}
-
-createSchema();
-seedData();
-syncBookedTeeTimeStatuses();
-
-function syncBookedTeeTimeStatuses() {
-  db.prepare(
-    `
+async function syncBookedTeeTimeStatuses() {
+  const sql = getSql();
+  await sql`
     UPDATE tee_times
     SET status = 'booked'
     WHERE id IN (
@@ -279,12 +138,109 @@ function syncBookedTeeTimeStatuses() {
       WHERE tee_time_id IS NOT NULL
         AND status IN ('pending', 'confirmed')
     )
-  `,
-  ).run();
+  `;
+}
+
+async function seedData() {
+  const sql = getSql();
+  const [count] = (await sql`SELECT COUNT(*)::int AS count FROM tee_times`) as DbRow[];
+  if (Number(count?.count ?? 0) > 0) return;
+
+  const dailySlots = [
+    ["07:40", "12:10", 4, 18, "available"],
+    ["08:10", "10:10", 4, 9, "available"],
+    ["08:50", "13:20", 2, 18, "available"],
+    ["09:20", "11:20", 4, 9, "available"],
+    ["10:10", "14:40", 2, 18, "available"],
+    ["11:30", "13:30", 4, 9, "available"],
+    ["13:10", "17:40", 4, 18, "available"],
+    ["15:20", "17:20", 4, 9, "available"],
+  ] as const;
+
+  const dates = Array.from({ length: 7 }, (_, index) => melbourneDate(index + 1));
+
+  for (const date of dates) {
+    for (const [startTime, endTime, capacity, holes, status] of dailySlots) {
+      await sql`
+        INSERT INTO tee_times (id, date, start_time, end_time, capacity, holes, status)
+        VALUES (${randomUUID()}, ${date}, ${startTime}, ${endTime}, ${capacity}, ${holes}, ${status})
+      `;
+    }
+  }
+
+  const [tomorrow810] = (await sql`
+    SELECT id FROM tee_times WHERE date = ${dates[0]} AND start_time = '08:10' LIMIT 1
+  `) as DbRow[];
+  const [tomorrow740] = (await sql`
+    SELECT id FROM tee_times WHERE date = ${dates[0]} AND start_time = '07:40' LIMIT 1
+  `) as DbRow[];
+
+  if (tomorrow810?.id) {
+    await sql`
+      INSERT INTO booking_requests (
+        id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
+        number_of_players, holes, notes, status, created_at
+      )
+      VALUES (
+        ${randomUUID()}, 'Oliver Chen', 'oliver@example.com', 'member', ${tomorrow810.id},
+        ${dates[0]}, '08:10', 4, 9,
+        'Seed booking: blocks 8:10 tomorrow for live availability demo.',
+        'pending', ${nowIso()}
+      )
+    `;
+  }
+
+  if (tomorrow740?.id) {
+    await sql`
+      INSERT INTO booking_requests (
+        id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
+        number_of_players, holes, notes, status, created_at
+      )
+      VALUES (
+        ${randomUUID()}, 'Priya Shah', '+61411111111', 'member', ${tomorrow740.id},
+        ${dates[0]}, '07:40', 4, 18,
+        'Seed booking: early group tomorrow.',
+        'confirmed', ${nowIso()}
+      )
+    `;
+  }
+
+  await sql`
+    INSERT INTO waitlist_entries (
+      id, caller_name, contact, date, time_window, number_of_players, notes, status, created_at
+    )
+    VALUES (
+      ${randomUUID()}, 'Grace Williams', 'grace@example.com', ${dates[0]}, '07:00-09:00',
+      2, 'Seed waitlist: wants an early tee time tomorrow.', 'open', ${nowIso()}
+    )
+  `;
+
+  await sql`
+    INSERT INTO calls (
+      id, retell_call_id, caller_name, intent, summary, transcript, sentiment, status, raw_payload, created_at
+    )
+    VALUES (
+      ${randomUUID()}, 'seed_call_001', 'Oliver Chen', 'tee_time_booking',
+      'Seed call: Oliver requested tomorrow at 8:10 AM for four players.',
+      'Caller asked for tomorrow morning. Agent created a booking request.',
+      'neutral', 'completed', '{}', ${nowIso()}
+    )
+  `;
+}
+
+async function ensureInitialized() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      await createSchema();
+      await seedData();
+      await syncBookedTeeTimeStatuses();
+    })();
+  }
+  return initPromise;
 }
 
 export function getDbPath() {
-  return dbPath;
+  return process.env.DATABASE_URL ? "Neon Postgres" : "DATABASE_URL not configured";
 }
 
 export function parseWindow(timeWindow: string) {
@@ -324,23 +280,19 @@ export function parseWindow(timeWindow: string) {
   return { start, end };
 }
 
-export function checkAvailability(input: AvailabilityInput) {
+export async function checkAvailability(input: AvailabilityInput) {
+  await ensureInitialized();
+  const sql = getSql();
   console.log("[db:checkAvailability] input", JSON.stringify(input, null, 2));
   const { start, end } = parseWindow(input.time_window);
   const players = Number(input.number_of_players);
   const holes = Number(input.holes ?? 18);
   console.log(
     "[db:checkAvailability] normalized query",
-    JSON.stringify(
-      { date: input.date, start, end, players, holes },
-      null,
-      2,
-    ),
+    JSON.stringify({ date: input.date, start, end, players, holes }, null, 2),
   );
 
-  const slots = db
-    .prepare(
-      `
+  const slots = (await sql`
     SELECT
       tt.*,
       br.id AS booking_id,
@@ -350,19 +302,14 @@ export function checkAvailability(input: AvailabilityInput) {
     LEFT JOIN booking_requests br
       ON br.tee_time_id = tt.id
       AND br.status IN ('pending', 'confirmed')
-    WHERE tt.date = ?
-      AND tt.start_time >= ?
-      AND tt.start_time <= ?
-      AND tt.holes = ?
+    WHERE tt.date = ${input.date}
+      AND tt.start_time >= ${start}
+      AND tt.start_time <= ${end}
+      AND tt.holes = ${holes}
       AND tt.status = 'available'
     ORDER BY tt.start_time ASC
-  `,
-    )
-    .all(input.date, start, end, holes);
-  console.log(
-    "[db:checkAvailability] candidate slots from DB",
-    JSON.stringify(slots, null, 2),
-  );
+  `) as DbRow[];
+  console.log("[db:checkAvailability] candidate slots from DB", JSON.stringify(slots, null, 2));
 
   const availableSlots = slots
     .filter((slot: any) => !slot.booking_id)
@@ -405,39 +352,37 @@ export function checkAvailability(input: AvailabilityInput) {
   return result;
 }
 
-export function createBooking(input: BookingInput) {
+export async function createBooking(input: BookingInput) {
+  await ensureInitialized();
+  const sql = getSql();
   console.log("[db:createBooking] input", JSON.stringify(input, null, 2));
-  const slot = db
-    .prepare(
-      `
+  const holes = Number(input.holes ?? 18);
+  const [slot] = (await sql`
     SELECT tt.*
     FROM tee_times tt
     LEFT JOIN booking_requests br
       ON br.tee_time_id = tt.id
       AND br.status IN ('pending', 'confirmed')
-    WHERE tt.date = ?
-      AND tt.start_time = ?
-      AND tt.holes = ?
+    WHERE tt.date = ${input.date}
+      AND tt.start_time = ${input.selected_slot}
+      AND tt.holes = ${holes}
       AND tt.status = 'available'
       AND br.id IS NULL
     LIMIT 1
-  `,
-    )
-    .get(input.date, input.selected_slot, input.holes ?? 18) as any;
+  `) as DbRow[];
   console.log("[db:createBooking] matched slot", JSON.stringify(slot ?? null, null, 2));
 
   if (!slot) {
     const result = {
       success: false,
       error: "slot_unavailable",
-      message:
-        "That tee time is no longer available. Offer the waitlist or suggest another time.",
+      message: "That tee time is no longer available. Offer the waitlist or suggest another time.",
     };
     console.log("[db:createBooking] failure result", JSON.stringify(result, null, 2));
     return result;
   }
 
-  if (slot.capacity < input.number_of_players) {
+  if (Number(slot.capacity) < Number(input.number_of_players)) {
     const result = {
       success: false,
       error: "capacity_too_low",
@@ -447,39 +392,36 @@ export function createBooking(input: BookingInput) {
     return result;
   }
 
+  const [updatedSlot] = (await sql`
+    UPDATE tee_times
+    SET status = 'booked'
+    WHERE id = ${slot.id}
+      AND status = 'available'
+    RETURNING id
+  `) as DbRow[];
+
+  if (!updatedSlot?.id) {
+    const result = {
+      success: false,
+      error: "slot_unavailable",
+      message: "That tee time was just taken. Offer the waitlist or suggest another time.",
+    };
+    console.log("[db:createBooking] race failure result", JSON.stringify(result, null, 2));
+    return result;
+  }
+
   const id = randomUUID();
-  const createBookingRequest = db.transaction(() => {
-    db.prepare(
-      `
-      INSERT INTO booking_requests (
-        id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
-        number_of_players, holes, notes, status, created_at
-      )
-      VALUES (
-        @id, @caller_name, @contact, @member_or_guest, @tee_time_id, @date, @selected_slot,
-        @number_of_players, @holes, @notes, 'pending', @created_at
-      )
-    `,
-    ).run({
-      id,
-      caller_name: input.name,
-      contact: input.contact,
-      member_or_guest: input.member_or_guest,
-      tee_time_id: slot.id,
-      date: input.date,
-      selected_slot: input.selected_slot,
-      number_of_players: input.number_of_players,
-      holes: input.holes ?? slot.holes ?? 18,
-      notes: input.notes ?? "",
-      created_at: nowIso(),
-    });
-
-    db.prepare("UPDATE tee_times SET status = 'booked' WHERE id = ?").run(
-      slot.id,
-    );
-  });
-
-  createBookingRequest();
+  await sql`
+    INSERT INTO booking_requests (
+      id, caller_name, contact, member_or_guest, tee_time_id, date, selected_slot,
+      number_of_players, holes, notes, status, created_at
+    )
+    VALUES (
+      ${id}, ${input.name}, ${input.contact}, ${input.member_or_guest}, ${slot.id},
+      ${input.date}, ${input.selected_slot}, ${Number(input.number_of_players)}, ${holes},
+      ${input.notes ?? ""}, 'pending', ${nowIso()}
+    )
+  `;
 
   const result = {
     success: true,
@@ -492,76 +434,61 @@ export function createBooking(input: BookingInput) {
   return result;
 }
 
-export function addWaitlist(input: WaitlistInput) {
+export async function addWaitlist(input: WaitlistInput) {
+  await ensureInitialized();
+  const sql = getSql();
   console.log("[db:addWaitlist] input", JSON.stringify(input, null, 2));
   parseWindow(input.time_window);
   const id = randomUUID();
-  db.prepare(
-    `
-    INSERT INTO waitlist_entries (id, caller_name, contact, date, time_window, number_of_players, notes, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
-  `,
-  ).run(
-    id,
-    input.name,
-    input.contact,
-    input.date,
-    input.time_window,
-    input.number_of_players,
-    input.notes ?? "",
-    nowIso(),
-  );
+  await sql`
+    INSERT INTO waitlist_entries (
+      id, caller_name, contact, date, time_window, number_of_players, notes, status, created_at
+    )
+    VALUES (
+      ${id}, ${input.name}, ${input.contact}, ${input.date}, ${input.time_window},
+      ${Number(input.number_of_players)}, ${input.notes ?? ""}, 'open', ${nowIso()}
+    )
+  `;
 
   const result = {
     success: true,
     waitlist_id: id,
     status: "open",
-    message:
-      "Waitlist entry created. The team will contact the caller if a suitable slot opens.",
+    message: "Waitlist entry created. The team will contact the caller if a suitable slot opens.",
   };
   console.log("[db:addWaitlist] result", JSON.stringify(result, null, 2));
   return result;
 }
 
-export function savePostCall(payload: any) {
+export async function savePostCall(payload: any) {
+  await ensureInitialized();
+  const sql = getSql();
   console.log("[db:savePostCall] payload", JSON.stringify(payload, null, 2));
   const id = randomUUID();
   const retellCallId =
     payload.call_id ?? payload.call?.call_id ?? payload.retell_call_id ?? null;
   const analysis = payload.call_analysis ?? payload.analysis ?? {};
   const callerName =
-    analysis.caller_name ??
-    payload.caller_name ??
-    payload.customer_name ??
-    null;
+    analysis.caller_name ?? payload.caller_name ?? payload.customer_name ?? null;
 
-  db.prepare(
-    `
+  await sql`
     INSERT INTO calls (
       id, retell_call_id, caller_name, intent, summary, transcript, sentiment,
       status, raw_payload, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-  ).run(
-    id,
-    retellCallId,
-    callerName,
-    analysis.intent ?? payload.intent ?? "post_call",
-    analysis.call_summary ??
-      analysis.summary ??
-      payload.summary ??
-      "Post-call webhook received.",
-    payload.transcript ??
-      payload.transcript_object
-        ?.map?.((item: any) => item.content)
-        .join("\n") ??
-      "",
-    analysis.sentiment ?? payload.sentiment ?? null,
-    payload.call_status ?? payload.status ?? "completed",
-    JSON.stringify(payload, null, 2),
-    nowIso(),
-  );
+    VALUES (
+      ${id},
+      ${retellCallId},
+      ${callerName},
+      ${analysis.intent ?? payload.intent ?? "post_call"},
+      ${analysis.call_summary ?? analysis.summary ?? payload.summary ?? "Post-call webhook received."},
+      ${payload.transcript ?? payload.transcript_object?.map?.((item: any) => item.content).join("\n") ?? ""},
+      ${analysis.sentiment ?? payload.sentiment ?? null},
+      ${payload.call_status ?? payload.status ?? "completed"},
+      ${JSON.stringify(payload, null, 2)},
+      ${nowIso()}
+    )
+  `;
 
   const result = {
     success: true,
@@ -572,44 +499,49 @@ export function savePostCall(payload: any) {
   return result;
 }
 
-export function logToolCall(
+export async function logToolCall(
   toolName: string,
   requestPayload: unknown,
   responsePayload: unknown,
 ) {
-  console.log(
-    "[db:logToolCall]",
-    JSON.stringify({ toolName, requestPayload, responsePayload }, null, 2),
-  );
-  db.prepare(
-    `
-    INSERT INTO tool_calls (id, tool_name, request_payload, response_payload, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `,
-  ).run(
-    randomUUID(),
-    toolName,
-    JSON.stringify(requestPayload, null, 2),
-    JSON.stringify(responsePayload, null, 2),
-    nowIso(),
-  );
+  try {
+    await ensureInitialized();
+    const sql = getSql();
+    console.log(
+      "[db:logToolCall]",
+      JSON.stringify({ toolName, requestPayload, responsePayload }, null, 2),
+    );
+    await sql`
+      INSERT INTO tool_calls (id, tool_name, request_payload, response_payload, created_at)
+      VALUES (
+        ${randomUUID()},
+        ${toolName},
+        ${JSON.stringify(requestPayload, null, 2)},
+        ${JSON.stringify(responsePayload, null, 2)},
+        ${nowIso()}
+      )
+    `;
+  } catch (error) {
+    console.error("[db:logToolCall] failed", error);
+  }
 }
 
-export function getDashboardData() {
+export async function getDashboardData() {
+  await ensureInitialized();
+  const sql = getSql();
+  const [teeTimes, bookingRequests, waitlistEntries, calls] = await Promise.all([
+    sql`SELECT * FROM tee_times ORDER BY date, start_time` as Promise<DbRow[]>,
+    sql`SELECT * FROM booking_requests ORDER BY created_at DESC` as Promise<DbRow[]>,
+    sql`SELECT * FROM waitlist_entries ORDER BY created_at DESC` as Promise<DbRow[]>,
+    sql`SELECT * FROM calls ORDER BY created_at DESC` as Promise<DbRow[]>,
+  ]);
+
   return {
-    db_path: dbPath,
-    tee_times: db
-      .prepare("SELECT * FROM tee_times ORDER BY date, start_time")
-      .all(),
-    booking_requests: db
-      .prepare("SELECT * FROM booking_requests ORDER BY created_at DESC")
-      .all(),
-    waitlist_entries: db
-      .prepare("SELECT * FROM waitlist_entries ORDER BY created_at DESC")
-      .all(),
-    calls: db.prepare("SELECT * FROM calls ORDER BY created_at DESC").all(),
-    tool_calls: db
-      .prepare("SELECT * FROM tool_calls ORDER BY created_at DESC LIMIT 25")
-      .all(),
+    db_path: getDbPath(),
+    tee_times: teeTimes,
+    booking_requests: bookingRequests,
+    waitlist_entries: waitlistEntries,
+    calls,
+    tool_calls: [],
   };
 }

@@ -1,7 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3"],
   async rewrites() {
     return [
       {
@@ -15,10 +14,6 @@ const nextConfig: NextConfig = {
       {
         source: "/addToWaitlist",
         destination: "/api/tools/addToWaitlist"
-      },
-      {
-        source: "/createStaffTask",
-        destination: "/api/tools/createStaffTask"
       }
     ];
   }

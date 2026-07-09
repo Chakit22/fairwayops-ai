@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       JSON.stringify(normalizedBody, null, 2),
     );
     logEvent(`${toolName}:normalized`, normalizedBody);
-    const result = checkAvailability(normalizedBody);
+    const result = await checkAvailability(normalizedBody);
     console.log(`[tool:${toolName}] result`, JSON.stringify(result, null, 2));
     logEvent(`${toolName}:result`, result);
     const response = toRetellToolResponse(
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
       "Tee-time availability checked.",
     );
     logEvent(`${toolName}:response`, response);
-    logToolCall("checkTeeTimeAvailability", body, response);
+    await logToolCall("checkTeeTimeAvailability", body, response);
     return NextResponse.json(response);
   } catch (error) {
     console.error(`[tool:${toolName}] failed`, error);
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
       "Unable to check tee-time availability.",
       error,
     );
-    logToolCall("checkTeeTimeAvailability", body, response);
+    await logToolCall("checkTeeTimeAvailability", body, response);
     return NextResponse.json(response);
   }
 }

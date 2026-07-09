@@ -12,8 +12,8 @@ function Empty({ label }: { label: string }) {
   return <div className="empty">No {label} yet.</div>;
 }
 
-export default function DashboardPage() {
-  const data = getDashboardData();
+export default async function DashboardPage() {
+  const data = await getDashboardData();
   const stats = [
     ["Calls", data.calls.length],
     ["Bookings", data.booking_requests.length],
@@ -27,7 +27,7 @@ export default function DashboardPage() {
           <p className="eyebrow">FairwayOps AI</p>
           <h1>Golf Club Receptionist Dashboard</h1>
           <p className="lede">
-            SQLite-backed demo showing calls, booking requests, waitlist entries,
+            Neon Postgres-backed demo showing calls, booking requests, waitlist entries,
             tee-time inventory, and tool-call logs.
           </p>
           <Link className="call-link" href="/call">
@@ -35,7 +35,7 @@ export default function DashboardPage() {
           </Link>
         </div>
         <div className="db-path">
-          <span>SQLite DB</span>
+          <span>Database</span>
           <code>{data.db_path}</code>
         </div>
       </section>

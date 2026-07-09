@@ -23,12 +23,12 @@ export async function POST(request: Request) {
       JSON.stringify(normalizedBody, null, 2),
     );
     logEvent(`${toolName}:normalized`, normalizedBody);
-    const result = createBooking(normalizedBody);
+    const result = await createBooking(normalizedBody);
     console.log(`[tool:${toolName}] result`, JSON.stringify(result, null, 2));
     logEvent(`${toolName}:result`, result);
     const response = toRetellToolResponse(result, "Booking request created.");
     logEvent(`${toolName}:response`, response);
-    logToolCall("createBookingRequest", body, response);
+    await logToolCall("createBookingRequest", body, response);
     return NextResponse.json(response);
   } catch (error) {
     console.error(`[tool:${toolName}] failed`, error);
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       "Unable to create booking request.",
       error,
     );
-    logToolCall("createBookingRequest", body, response);
+    await logToolCall("createBookingRequest", body, response);
     return NextResponse.json(response);
   }
 }

@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     console.log("[retell:post-call] incoming payload", JSON.stringify(body, null, 2));
     logEvent("post-call:incoming", body);
-    const result = savePostCall(body);
+    const result = await savePostCall(body);
     console.log("[retell:post-call] result", JSON.stringify(result, null, 2));
     logEvent("post-call:result", result);
     return NextResponse.json(result);
